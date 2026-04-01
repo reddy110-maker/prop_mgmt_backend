@@ -3,7 +3,7 @@ from google.cloud import bigquery
 
 app = FastAPI()
 
-PROJECT_ID = "YOUR_PROJECT_ID"
+PROJECT_ID = "leafy-clone-452120-b6"
 DATASET = "property_mgmt"
 
 
