@@ -12,7 +12,7 @@ DATASET = "property_mgmt"
 # ---------------------------------------------------------------------------
 
 def get_bq_client():
-    client = bigquery.Client()
+    client = bigquery.Client(project=PROJECT_ID)
     try:
         yield client
     finally:
@@ -45,14 +45,13 @@ def get_properties(bq: bigquery.Client = Depends(get_bq_client)):
 
     try:
         results = bq.query(query).result()
+        properties = [dict(row) for row in results]
+        return properties
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Database query failed: {str(e)}"
         )
-
-    properties = [dict(row) for row in results]
-    return properties
 
 
 @app.get("/properties/{property_id}")
@@ -87,19 +86,22 @@ def get_property_by_id(
     try:
         results = bq.query(query, job_config=job_config).result()
         property_record = [dict(row) for row in results]
+
+        if not property_record:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Property with ID {property_id} not found"
+            )
+
+        return property_record[0]
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Database query failed: {str(e)}"
         )
-
-    if not property_record:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Property with ID {property_id} not found"
-        )
-
-    return property_record[0]
 
 
 # ---------------------------------------------------------------------------
@@ -118,13 +120,12 @@ def get_income_by_property(
         SELECT
             income_id,
             property_id,
-            income_date,
-            income_type,
             amount,
-            notes
+            date,
+            description
         FROM `{PROJECT_ID}.{DATASET}.income`
         WHERE property_id = @property_id
-        ORDER BY income_date
+        ORDER BY date
     """
 
     job_config = bigquery.QueryJobConfig(
@@ -135,14 +136,13 @@ def get_income_by_property(
 
     try:
         results = bq.query(query, job_config=job_config).result()
+        income_records = [dict(row) for row in results]
+        return income_records
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Database query failed: {str(e)}"
         )
-
-    income_records = [dict(row) for row in results]
-    return income_records
 
 
 @app.post("/income/{property_id}")
@@ -151,7 +151,7 @@ def create_income_record(
     bq: bigquery.Client = Depends(get_bq_client)
 ):
     """
-    Creates a new income record for a property.
+    Creates a new sample income record for a property.
     """
     try:
         property_check_query = f"""
@@ -178,9 +178,15 @@ def create_income_record(
 
         insert_query = f"""
             INSERT INTO `{PROJECT_ID}.{DATASET}.income`
-                (property_id, income_date, income_type, amount, notes)
+                (income_id, property_id, amount, date, description)
             VALUES
-                (@property_id, CURRENT_DATE(), 'Rent', 1000.00, 'Sample income record')
+                (
+                    (SELECT IFNULL(MAX(income_id), 0) + 1 FROM `{PROJECT_ID}.{DATASET}.income`),
+                    @property_id,
+                    1000.00,
+                    CURRENT_DATE(),
+                    'Sample income record'
+                )
         """
 
         insert_config = bigquery.QueryJobConfig(
@@ -220,14 +226,14 @@ def get_expenses_by_property(
         SELECT
             expense_id,
             property_id,
-            expense_date,
-            expense_type,
             amount,
+            date,
+            category,
             vendor,
-            notes
+            description
         FROM `{PROJECT_ID}.{DATASET}.expenses`
         WHERE property_id = @property_id
-        ORDER BY expense_date
+        ORDER BY date
     """
 
     job_config = bigquery.QueryJobConfig(
@@ -238,14 +244,13 @@ def get_expenses_by_property(
 
     try:
         results = bq.query(query, job_config=job_config).result()
+        expense_records = [dict(row) for row in results]
+        return expense_records
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Database query failed: {str(e)}"
         )
-
-    expense_records = [dict(row) for row in results]
-    return expense_records
 
 
 @app.post("/expenses/{property_id}")
@@ -254,7 +259,7 @@ def create_expense_record(
     bq: bigquery.Client = Depends(get_bq_client)
 ):
     """
-    Creates a new expense record for a property.
+    Creates a new sample expense record for a property.
     """
     try:
         property_check_query = f"""
@@ -281,9 +286,17 @@ def create_expense_record(
 
         insert_query = f"""
             INSERT INTO `{PROJECT_ID}.{DATASET}.expenses`
-                (property_id, expense_date, expense_type, amount, vendor, notes)
+                (expense_id, property_id, amount, date, category, vendor, description)
             VALUES
-                (@property_id, CURRENT_DATE(), 'Maintenance', 150.00, 'Sample Vendor', 'Sample expense record')
+                (
+                    (SELECT IFNULL(MAX(expense_id), 0) + 1 FROM `{PROJECT_ID}.{DATASET}.expenses`),
+                    @property_id,
+                    150.00,
+                    CURRENT_DATE(),
+                    'Maintenance',
+                    'Sample Vendor',
+                    'Sample expense record'
+                )
         """
 
         insert_config = bigquery.QueryJobConfig(
