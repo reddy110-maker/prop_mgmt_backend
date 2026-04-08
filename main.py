@@ -74,7 +74,27 @@ class IncomeCreate(BaseModel):
         return self.description or self.source or "Income record"
 
 
+class IncomeUpdate(BaseModel):
+    amount: float
+    date: str
+    description: Optional[str] = None
+    source: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    def resolved_description(self) -> str:
+        return self.description or self.source or "Income record"
+
+
 class ExpenseCreate(BaseModel):
+    amount: float
+    date: str
+    category: str
+    description: str
+    vendor: Optional[str] = "Unknown"
+
+
+class ExpenseUpdate(BaseModel):
     amount: float
     date: str
     category: str
@@ -106,6 +126,54 @@ def validate_property_exists(property_id: int, bq: bigquery.Client):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Property with ID {property_id} not found"
         )
+
+
+def validate_income_exists(income_id: int, bq: bigquery.Client):
+    query = f"""
+        SELECT income_id, property_id
+        FROM `{PROJECT_ID}.{DATASET}.income`
+        WHERE income_id = @income_id
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("income_id", "INT64", income_id)
+        ]
+    )
+
+    results = [dict(row) for row in bq.query(query, job_config=job_config).result()]
+
+    if not results:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Income record with ID {income_id} not found"
+        )
+
+    return results[0]
+
+
+def validate_expense_exists(expense_id: int, bq: bigquery.Client):
+    query = f"""
+        SELECT expense_id, property_id
+        FROM `{PROJECT_ID}.{DATASET}.expenses`
+        WHERE expense_id = @expense_id
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("expense_id", "INT64", expense_id)
+        ]
+    )
+
+    results = [dict(row) for row in bq.query(query, job_config=job_config).result()]
+
+    if not results:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Expense record with ID {expense_id} not found"
+        )
+
+    return results[0]
 
 
 def get_next_id(table_name: str, id_column: str, bq: bigquery.Client) -> int:
@@ -446,6 +514,89 @@ def create_income_record(
         )
 
 
+@app.put("/income/record/{income_id}")
+def update_income_record(
+    income_id: int,
+    income_data: IncomeUpdate,
+    bq: bigquery.Client = Depends(get_bq_client)
+):
+    try:
+        existing_record = validate_income_exists(income_id, bq)
+
+        update_query = f"""
+            UPDATE `{PROJECT_ID}.{DATASET}.income`
+            SET
+                amount = @amount,
+                date = @date,
+                description = @description
+            WHERE income_id = @income_id
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("income_id", "INT64", income_id),
+                bigquery.ScalarQueryParameter("amount", "FLOAT64", income_data.amount),
+                bigquery.ScalarQueryParameter("date", "DATE", income_data.date),
+                bigquery.ScalarQueryParameter("description", "STRING", income_data.resolved_description()),
+            ]
+        )
+
+        bq.query(update_query, job_config=job_config).result()
+
+        return {
+            "message": f"Income record {income_id} updated successfully",
+            "income_id": income_id,
+            "property_id": existing_record["property_id"],
+            "amount": income_data.amount,
+            "date": income_data.date,
+            "description": income_data.resolved_description(),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update income record: {str(e)}"
+        )
+
+
+@app.delete("/income/record/{income_id}")
+def delete_income_record(
+    income_id: int,
+    bq: bigquery.Client = Depends(get_bq_client)
+):
+    try:
+        existing_record = validate_income_exists(income_id, bq)
+
+        delete_query = f"""
+            DELETE FROM `{PROJECT_ID}.{DATASET}.income`
+            WHERE income_id = @income_id
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("income_id", "INT64", income_id)
+            ]
+        )
+
+        bq.query(delete_query, job_config=job_config).result()
+
+        return {
+            "status": "deleted",
+            "income_id": income_id,
+            "property_id": existing_record["property_id"]
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete income record: {str(e)}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Expenses
 # ---------------------------------------------------------------------------
@@ -536,6 +687,95 @@ def create_expense_record(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create expense record: {str(e)}"
+        )
+
+
+@app.put("/expenses/record/{expense_id}")
+def update_expense_record(
+    expense_id: int,
+    expense_data: ExpenseUpdate,
+    bq: bigquery.Client = Depends(get_bq_client)
+):
+    try:
+        existing_record = validate_expense_exists(expense_id, bq)
+
+        update_query = f"""
+            UPDATE `{PROJECT_ID}.{DATASET}.expenses`
+            SET
+                amount = @amount,
+                date = @date,
+                category = @category,
+                vendor = @vendor,
+                description = @description
+            WHERE expense_id = @expense_id
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("expense_id", "INT64", expense_id),
+                bigquery.ScalarQueryParameter("amount", "FLOAT64", expense_data.amount),
+                bigquery.ScalarQueryParameter("date", "DATE", expense_data.date),
+                bigquery.ScalarQueryParameter("category", "STRING", expense_data.category),
+                bigquery.ScalarQueryParameter("vendor", "STRING", expense_data.vendor),
+                bigquery.ScalarQueryParameter("description", "STRING", expense_data.description),
+            ]
+        )
+
+        bq.query(update_query, job_config=job_config).result()
+
+        return {
+            "message": f"Expense record {expense_id} updated successfully",
+            "expense_id": expense_id,
+            "property_id": existing_record["property_id"],
+            "amount": expense_data.amount,
+            "date": expense_data.date,
+            "category": expense_data.category,
+            "vendor": expense_data.vendor,
+            "description": expense_data.description,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update expense record: {str(e)}"
+        )
+
+
+@app.delete("/expenses/record/{expense_id}")
+def delete_expense_record(
+    expense_id: int,
+    bq: bigquery.Client = Depends(get_bq_client)
+):
+    try:
+        existing_record = validate_expense_exists(expense_id, bq)
+
+        delete_query = f"""
+            DELETE FROM `{PROJECT_ID}.{DATASET}.expenses`
+            WHERE expense_id = @expense_id
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("expense_id", "INT64", expense_id)
+            ]
+        )
+
+        bq.query(delete_query, job_config=job_config).result()
+
+        return {
+            "status": "deleted",
+            "expense_id": expense_id,
+            "property_id": existing_record["property_id"]
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete expense record: {str(e)}"
         )
 
 
